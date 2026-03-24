@@ -75,16 +75,26 @@
       <input id="user-input" type="text" placeholder="Type here" autocomplete="off" disabled />
       <button id="send-btn" disabled>Send</button>
     </div>
-    <div id="status">Loading persona...</div>
+    <div id="status">Loading...</div>
   </div>
 
 <script>
+/*
+  URL params:
+    condition = "twin" | "gpt" | "control"
+      twin    → chat with a real Black twin from Twin-2K-500
+      gpt     → chat with ChatGPT prompted as a Black American (minimal prompt)
+      control → neutral chat (about pets, hobbies, etc.)
+    pid       → (optional) specific persona ID for the twin condition
+*/
+
 const PROXY_URL = "https://script.google.com/macros/s/AKfycbxUCOU5JqXGabGyKN7lcv7YuKj_8B-Jjt_0n3Lq8pEtwljYvzDKXOaC86lbcSYJW7fI/exec";
 
-let persona = null;
+let systemPrompt = null;
 let personaId = null;
 let personaTwstScore = null;
 let personaGreenScore = null;
+let condition = null;
 let history = [];
 let turnCount = 0;
 let finished = false;
@@ -113,62 +123,95 @@ function setEnabled(on) {
   sendBtn.disabled = !on;
 }
 
+function sendMetadata() {
+  window.parent.postMessage({
+    type: "chatbot_transcript",
+    session_id: (personaId || condition) + "_" + Date.now(),
+    persona_id: personaId,
+    condition: condition,
+    transcript: "",
+    turn_count: 0,
+    twst_score: personaTwstScore,
+    green_score: personaGreenScore
+  }, "*");
+}
+
+async function initTwin() {
+  const res = await fetch("personas_black_full.json");
+  const personasArr = await res.json();
+
+  const pidParam = param("pid");
+  let entry;
+  if (pidParam) {
+    entry = personasArr.find(p => String(p.pid) === String(pidParam));
+  }
+  if (!entry) {
+    entry = personasArr[Math.floor(Math.random() * personasArr.length)];
+  }
+
+  personaId = entry.pid;
+  personaTwstScore = entry.twst_score;
+  personaGreenScore = entry.green_score;
+
+  systemPrompt =
+    "You are roleplaying as a specific person. You must stay in character at all times and respond as this person would, based on their profile below. Do not break character. Do not reveal that you are an AI. Respond naturally and conversationally.\n\nAge ranges in the profile are survey buckets — pick and consistently use a specific realistic age within the range (e.g. '65+' becomes 72, '30-49' becomes 38).\n\n--- PERSONA PROFILE ---\n" +
+    entry.persona +
+    "\n--- END PERSONA PROFILE ---";
+}
+
+function initGpt() {
+  personaId = "gpt_black";
+  personaTwstScore = null;
+  personaGreenScore = null;
+
+  systemPrompt =
+    "You are a Black American. Have a natural conversation. If asked about yourself, share details about your life, preferences, and habits as they come up naturally. Do not volunteer your race unless asked directly. Do not reveal that you are an AI. Respond naturally and conversationally.";
+}
+
+function initControl() {
+  personaId = "control";
+  personaTwstScore = null;
+  personaGreenScore = null;
+
+  systemPrompt =
+    "You are a friendly conversationalist. Have a casual, natural conversation about everyday topics like pets, hobbies, travel, food, sports, movies, or music. Keep the conversation light and engaging. Do not discuss politics, race, income, shopping habits, or spending. Do not reveal that you are an AI. Respond naturally and conversationally.";
+}
+
 async function init() {
+  condition = (param("condition") || "twin").toLowerCase();
+
   try {
-    const res = await fetch("personas_black_full.json");
-    const personasArr = await res.json();
-
-    // Pick persona: from URL param or random
-    const pidParam = param("pid");
-    let entry;
-    if (pidParam) {
-      entry = personasArr.find(p => String(p.pid) === String(pidParam));
+    if (condition === "twin") {
+      await initTwin();
+    } else if (condition === "gpt") {
+      initGpt();
+    } else if (condition === "control") {
+      initControl();
+    } else {
+      addMsg("system", "Unknown condition: " + condition);
+      return;
     }
-    if (!entry) {
-      entry = personasArr[Math.floor(Math.random() * personasArr.length)];
-    }
-    personaId = entry.pid;
-    persona = entry.persona;
-    personaTwstScore = entry.twst_score;
-    personaGreenScore = entry.green_score;
 
-    headerEl.textContent = "Conversation (Persona #" + personaId + ")";
-
-    // Send persona metadata to Qualtrics immediately
-    window.parent.postMessage({
-      type: "chatbot_transcript",
-      session_id: personaId + "_" + Date.now(),
-      persona_id: personaId,
-      transcript: "",
-      turn_count: 0,
-      twst_score: personaTwstScore,
-      green_score: personaGreenScore
-    }, "*");
+    sendMetadata();
 
     addMsg("assistant", "Hi! Feel free to ask me anything.");
     setEnabled(true);
     inputEl.focus();
 
-    // Also send updated transcript when chat ends (10-min timer)
     setTimeout(function() { if (!finished) endChat(); }, 10 * 60 * 1000);
   } catch (err) {
-    addMsg("system", "Error loading personas: " + err.message);
+    addMsg("system", "Error: " + err.message);
   }
 }
 
 async function sendMessage() {
   const text = inputEl.value.trim();
-  if (!text || !persona || finished) return;
+  if (!text || !systemPrompt || finished) return;
 
   addMsg("user", text);
   inputEl.value = "";
   setEnabled(false);
   typingEl.style.display = "block";
-
-  const systemPrompt =
-    "You are roleplaying as a specific person. You must stay in character at all times and respond as this person would, based on their profile below. Do not break character. Do not reveal that you are an AI. Respond naturally and conversationally.\n\nAge ranges in the profile are survey buckets — pick and consistently use a specific realistic age within the range (e.g. '65+' becomes 72, '30-49' becomes 38).\n\n--- PERSONA PROFILE ---\n" +
-    persona +
-    "\n--- END PERSONA PROFILE ---";
 
   try {
     const res = await fetch(PROXY_URL, {
@@ -208,8 +251,9 @@ function endChat() {
   try {
     window.parent.postMessage({
       type: "chatbot_transcript",
-      session_id: personaId + "_" + Date.now(),
+      session_id: (personaId || condition) + "_" + Date.now(),
       persona_id: personaId,
+      condition: condition,
       transcript: JSON.stringify(history),
       turn_count: turnCount,
       twst_score: personaTwstScore,
