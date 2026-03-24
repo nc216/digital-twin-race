@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Digital Twin Chat</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      background: #fff;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+    #chat-container {
+      width: 100%; height: 100vh;
+      background: #fff;
+      display: flex; flex-direction: column; overflow: hidden;
+    }
+    #chat-header { display: none; }
+    #chat-messages {
+      flex: 1; overflow-y: auto; padding: 20px 16px 10px 16px;
+      display: flex; flex-direction: column; gap: 10px;
+    }
+    .msg {
+      max-width: 80%; padding: 8px 12px; border-radius: 10px;
+      font-size: 18px; line-height: 1.45; word-wrap: break-word;
+    }
+    .msg.user {
+      align-self: flex-end; background: #4a90d9; color: #fff;
+      border-bottom-right-radius: 4px;
+    }
+    .msg.assistant {
+      align-self: flex-start; background: #ebebeb; color: #333;
+      border-bottom-left-radius: 4px;
+    }
+    .msg.system {
+      align-self: center; background: #fff3cd; color: #856404;
+      font-size: 14px; border-radius: 8px;
+    }
+    #typing {
+      align-self: flex-start; color: #999; font-size: 15px;
+      font-style: italic; padding: 4px 12px; display: none;
+    }
+    #input-area {
+      display: flex; border-top: none;
+      padding: 12px 16px; gap: 10px; align-items: center;
+    }
+    #user-input {
+      flex: 1; border: none; border-radius: 6px;
+      background: #ebebeb; color: #333;
+      padding: 10px 14px; font-size: 18px; outline: none;
+      font-family: inherit; height: 42px;
+    }
+    #user-input::placeholder { color: #999; }
+    #user-input:disabled { opacity: 0.6; }
+    #send-btn {
+      background: #6abf69; color: #fff; border: none;
+      border-radius: 6px; padding: 0 18px; font-size: 16px;
+      cursor: pointer; font-weight: 600; height: 42px;
+    }
+    #send-btn:hover { background: #57a857; }
+    #send-btn:disabled { background: #aaa; cursor: not-allowed; }
+    #status { display: none; }
+  </style>
+</head>
+<body>
+  <div id="chat-container">
+    <div id="chat-header">Conversation</div>
+    <div id="chat-messages">
+      <div id="typing">Typing...</div>
+    </div>
+    <div id="input-area">
+      <input id="user-input" type="text" placeholder="Type here" autocomplete="off" disabled />
+      <button id="send-btn" disabled>Send</button>
+    </div>
+    <div id="status">Loading persona...</div>
+  </div>
+
+<script>
+const PROXY_URL = "https://script.google.com/macros/s/AKfycbxUCOU5JqXGabGyKN7lcv7YuKj_8B-Jjt_0n3Lq8pEtwljYvzDKXOaC86lbcSYJW7fI/exec";
+
+let persona = null;
+let personaId = null;
+let personaTwstScore = null;
+let personaGreenScore = null;
+let history = [];
+let turnCount = 0;
+let finished = false;
+
+const messagesEl = document.getElementById("chat-messages");
+const inputEl = document.getElementById("user-input");
+const sendBtn = document.getElementById("send-btn");
+const typingEl = document.getElementById("typing");
+const statusEl = document.getElementById("status");
+const headerEl = document.getElementById("chat-header");
+
+function param(name) {
+  return new URLSearchParams(window.location.search).get(name);
+}
+
+function addMsg(role, text) {
+  const div = document.createElement("div");
+  div.className = "msg " + role;
+  div.textContent = text;
+  messagesEl.insertBefore(div, typingEl);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function setEnabled(on) {
+  inputEl.disabled = !on;
+  sendBtn.disabled = !on;
+}
+
+async function init() {
+  try {
+    const res = await fetch("personas_black_full.json");
+    const personasArr = await res.json();
+
+    // Pick persona: from URL param or random
+    const pidParam = param("pid");
+    let entry;
+    if (pidParam) {
+      entry = personasArr.find(p => String(p.pid) === String(pidParam));
+    }
+    if (!entry) {
+      entry = personasArr[Math.floor(Math.random() * personasArr.length)];
+    }
+    personaId = entry.pid;
+    persona = entry.persona;
+    personaTwstScore = entry.twst_score;
+    personaGreenScore = entry.green_score;
+
+    headerEl.textContent = "Conversation (Persona #" + personaId + ")";
+
+    // Send persona metadata to Qualtrics immediately
+    window.parent.postMessage({
+      type: "chatbot_transcript",
+      session_id: personaId + "_" + Date.now(),
+      persona_id: personaId,
+      transcript: "",
+      turn_count: 0,
+      twst_score: personaTwstScore,
+      green_score: personaGreenScore
+    }, "*");
+
+    addMsg("assistant", "Hi! Feel free to ask me anything.");
+    setEnabled(true);
+    inputEl.focus();
+
+    // Also send updated transcript when chat ends (10-min timer)
+    setTimeout(function() { if (!finished) endChat(); }, 10 * 60 * 1000);
+  } catch (err) {
+    addMsg("system", "Error loading personas: " + err.message);
+  }
+}
+
+async function sendMessage() {
+  const text = inputEl.value.trim();
+  if (!text || !persona || finished) return;
+
+  addMsg("user", text);
+  inputEl.value = "";
+  setEnabled(false);
+  typingEl.style.display = "block";
+
+  const systemPrompt =
+    "You are roleplaying as a specific person. You must stay in character at all times and respond as this person would, based on their profile below. Do not break character. Do not reveal that you are an AI. Respond naturally and conversationally.\n\nAge ranges in the profile are survey buckets — pick and consistently use a specific realistic age within the range (e.g. '65+' becomes 72, '30-49' becomes 38).\n\n--- PERSONA PROFILE ---\n" +
+    persona +
+    "\n--- END PERSONA PROFILE ---";
+
+  try {
+    const res = await fetch(PROXY_URL, {
+      method: "POST",
+      headers: { "Content-Type": "text/plain" },
+      body: JSON.stringify({
+        system: systemPrompt,
+        history: history,
+        message: text
+      })
+    });
+    const data = await res.json();
+    typingEl.style.display = "none";
+
+    if (data.error) throw new Error(data.error);
+
+    const reply = data.output_text || "(no response)";
+    addMsg("assistant", reply);
+
+    history.push({ role: "user", content: text });
+    history.push({ role: "assistant", content: reply });
+    turnCount++;
+    setEnabled(true);
+    inputEl.focus();
+  } catch (err) {
+    typingEl.style.display = "none";
+    addMsg("system", "Error: " + err.message);
+    setEnabled(true);
+  }
+}
+
+function endChat() {
+  finished = true;
+  setEnabled(false);
+  addMsg("system", "Conversation complete. Thank you!");
+
+  try {
+    window.parent.postMessage({
+      type: "chatbot_transcript",
+      session_id: personaId + "_" + Date.now(),
+      persona_id: personaId,
+      transcript: JSON.stringify(history),
+      turn_count: turnCount,
+      twst_score: personaTwstScore,
+      green_score: personaGreenScore
+    }, "*");
+  } catch (_) {}
+}
+
+sendBtn.addEventListener("click", sendMessage);
+inputEl.addEventListener("keydown", function(e) {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+});
+
+init();
+</script>
+</body>
+</html>
