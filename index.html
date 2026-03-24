@@ -81,11 +81,12 @@
 <script>
 /*
   URL params:
-    condition = "twin" | "gpt" | "control"
-      twin    → chat with a real Black twin from Twin-2K-500
-      gpt     → chat with ChatGPT prompted as a Black American (minimal prompt)
-      control → neutral chat (about pets, hobbies, etc.)
-    pid       → (optional) specific persona ID for the twin condition
+    condition = "twin" | "twin_white" | "gpt" | "control"
+      twin       → chat with a real Black twin from Twin-2K-500
+      twin_white → chat with a real White twin from Twin-2K-500
+      gpt        → chat with ChatGPT prompted as a Black American (minimal prompt)
+      control    → neutral chat (about pets, hobbies, etc.)
+    pid          → (optional) specific persona ID for the twin condition
 */
 
 const PROXY_URL = "https://script.google.com/macros/s/AKfycbxUCOU5JqXGabGyKN7lcv7YuKj_8B-Jjt_0n3Lq8pEtwljYvzDKXOaC86lbcSYJW7fI/exec";
@@ -159,6 +160,29 @@ async function initTwin() {
     "\n--- END PERSONA PROFILE ---";
 }
 
+async function initTwinWhite() {
+  const res = await fetch("personas_white_full.json");
+  const personasArr = await res.json();
+
+  const pidParam = param("pid");
+  let entry;
+  if (pidParam) {
+    entry = personasArr.find(p => String(p.pid) === String(pidParam));
+  }
+  if (!entry) {
+    entry = personasArr[Math.floor(Math.random() * personasArr.length)];
+  }
+
+  personaId = "white_" + entry.pid;
+  personaTwstScore = entry.twst_score;
+  personaGreenScore = entry.green_score;
+
+  systemPrompt =
+    "You are roleplaying as a specific person. You must stay in character at all times and respond as this person would, based on their profile below. Do not break character. Do not reveal that you are an AI. Respond naturally and conversationally.\n\nAge ranges in the profile are survey buckets — pick and consistently use a specific realistic age within the range (e.g. '65+' becomes 72, '30-49' becomes 38).\n\n--- PERSONA PROFILE ---\n" +
+    entry.persona +
+    "\n--- END PERSONA PROFILE ---";
+}
+
 function initGpt() {
   personaId = "gpt_black";
   personaTwstScore = null;
@@ -183,6 +207,8 @@ async function init() {
   try {
     if (condition === "twin") {
       await initTwin();
+    } else if (condition === "twin_white") {
+      await initTwinWhite();
     } else if (condition === "gpt") {
       initGpt();
     } else if (condition === "control") {
